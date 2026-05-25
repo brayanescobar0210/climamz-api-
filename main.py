@@ -1,111 +1,117 @@
-# main.py
-# La API que expone el grafo LangGraph al mundo exterior
-
+import os
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import List, Optional
-from datetime import datetime, timezone
+from fastapi.responses import HTMLResponse  # <-- IMPORTANTE: Añade esto
+from pydantic import BaseModel
+from langgraph.graph import StateGraph, START, END
 
-from agents import grafo  # Importamos el grafo que construimos en agents.py
+# --- [AQUÍ VA TU CONFIGURACIÓN Y GRAFO DE LANGGRAPH] ---
+# (Deja intacto todo tu código del clima de Manizales y la compilación del grafo)
 
-# ─── MODELOS DE DATOS ─────────────────────────────────────────────
-# Pydantic valida automáticamente que los datos que llegan tengan
-# el formato correcto. Si algo falta o tiene tipo incorrecto, devuelve
-# un error 422 claro en vez de crashear
+app = FastAPI(title="ClimaMZ API & UI")
 
-class ReporteEntrada(BaseModel):
-    barrio:    str
-    condicion: str   # 'soleado', 'nublado', 'lloviendo', 'tormenta', 'neblina'
+class Query(BaseModel):
+    message: str
 
-class ConsultaEntrada(BaseModel):
-    barrio_consulta:     str
-    reportes_ciudadanos: List[ReporteEntrada] = Field(default_factory=list)
-    # default_factory=list significa que si no envían reportes, la lista
-    # empieza vacía — no da error
+# 1. EL ENDPOINT DE LA INTERFAZ VISUAL (Página de inicio)
+@app.get("/", response_class=HTMLResponse)
+def read_root():
+    return """
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>ClimaMZ - Asistente de Clima</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+    </head>
+    <body class="bg-gray-900 text-white font-sans h-screen flex flex-col">
 
-class ResultadoSalida(BaseModel):
-    barrio:              str
-    condicion_predicha:  Optional[str]
-    probabilidad_lluvia: Optional[float]
-    nivel_alerta:        Optional[str]
-    mensaje_final:       Optional[str]
-    contradiccion:       Optional[bool]
-    errores:             List[str]
+        <header class="bg-gray-800 p-4 text-center border-b border-gray-700 shadow-md">
+            <h1 class="text-xl font-bold text-emerald-400">🌤️ ClimaMZ Agent</h1>
+            <p class="text-xs text-gray-400">Asistente inteligente para Manizales</p>
+        </header>
 
+        <main id="chat-container" class="flex-1 overflow-y-auto p-4 space-y-4 max-w-3xl w-full mx-auto">
+            <div class="flex items-start gap-2.5">
+                <div class="bg-gray-800 p-3 rounded-lg rounded-tl-none border border-gray-700 max-w-[85%] shadow">
+                    <p class="text-sm">¡Hola! Soy tu asistente climático de Manizales. ¿De qué sector o vereda quieres consultar el clima hoy?</p>
+                </div>
+            </div>
+        </main>
 
-# ─── APLICACIÓN ───────────────────────────────────────────────────
-app = FastAPI(
-    title="ClimaMZ API",
-    description="Predicción climática multiagente para Manizales, Colombia",
-    version="1.0.0"
-)
+        <footer class="bg-gray-800 p-4 border-t border-gray-700 shadow-inner">
+            <div class="max-w-3xl mx-auto flex gap-2">
+                <input type="text" id="user-input" placeholder="Pregúntame sobre el clima..." 
+                       class="flex-1 bg-gray-700 text-white p-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 placeholder-gray-400 text-sm">
+                <button id="send-btn" class="bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-3 rounded-lg font-semibold text-sm transition-all shadow-md">
+                    Enviar
+                </button>
+            </div>
+        </footer>
 
-# CORS: permite que el frontend (en otro dominio) llame a esta API
-# Sin esto, el navegador bloquea las peticiones por seguridad
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],   # En producción real deberías poner la URL exacta del frontend
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+        <script>
+            const chatContainer = document.getElementById('chat-container');
+            const userInput = document.getElementById('user-input');
+            const sendBtn = document.getElementById('send-btn');
 
+            function appendMessage(text, isUser = false) {
+                const wrapper = document.createElement('div');
+                wrapper.className = isUser ? "flex items-start justify-end gap-2.5" : "flex items-start gap-2.5";
+                
+                const bubble = document.createElement('div');
+                bubble.className = isUser 
+                    ? "bg-emerald-600 p-3 rounded-lg rounded-tr-none max-w-[85%] shadow text-sm" 
+                    : "bg-gray-800 p-3 rounded-lg rounded-tl-none border border-gray-700 max-w-[85%] shadow text-sm";
+                
+                bubble.innerText = text;
+                wrapper.appendChild(bubble);
+                chatContainer.appendChild(wrapper);
+                chatContainer.scrollTop = chatContainer.scrollHeight; // Auto-scroll hacia abajo
+            }
 
-# ─── ENDPOINTS ────────────────────────────────────────────────────
+            async function sendMessage() {
+                const message = userInput.value.trim();
+                if (!message) return;
 
-@app.get("/")
-def raiz():
-    """Endpoint de verificación — confirma que la API está viva."""
-    return {"estado": "activo", "sistema": "ClimaMZ API v1.0"}
+                // 1. Mostrar mensaje del usuario en pantalla
+                appendMessage(message, true);
+                userInput.value = '';
 
+                // 2. Mostrar indicador de "escribiendo..."
+                appendMessage("Pensando...");
+                const thinkingBubble = chatContainer.lastChild;
 
-@app.get("/health")
-def health():
-    """Render usa este endpoint para saber si el servicio está sano."""
-    return {"status": "ok"}
+                try {
+                    // 3. Petición automática a tu propio endpoint /chat
+                    const response = await fetch('/chat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ message: message })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    // 4. Reemplazar el "Pensando..." con la respuesta real de LangGraph
+                    // Ajusta 'data.respuesta' según el formato exacto que devuelva tu JSON
+                    thinkingBubble.querySelector('div').innerText = data.respuesta || JSON.stringify(data);
+                } catch (error) {
+                    thinkingBubble.querySelector('div').innerText = "Error al conectar con el agente.";
+                }
+            }
 
-
-@app.post("/predecir", response_model=ResultadoSalida)
-async def predecir(consulta: ConsultaEntrada):
+            sendBtn.addEventListener('click', sendMessage);
+            userInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
+        </script>
+    </body>
+    </html>
     """
-    Endpoint principal.
-    Recibe el barrio y los reportes ciudadanos,
-    ejecuta el grafo LangGraph y devuelve la predicción.
-    """
 
-    # Convertimos los reportes al formato que espera el grafo
-    ahora = datetime.now(timezone.utc).isoformat()
-    reportes_formateados = [
-        {
-            "barrio":    r.barrio.lower().strip(),
-            "condicion": r.condicion.lower().strip(),
-            "timestamp": ahora,   # Usamos la hora actual del servidor
-            "peso":      0.5      # Peso inicial — el validador lo recalcula
-        }
-        for r in consulta.reportes_ciudadanos
-    ]
-
-    estado_inicial = {
-        "barrio_consulta":     consulta.barrio_consulta,
-        "reportes_ciudadanos": reportes_formateados,
-        "datos_api":           None,
-        "errores":             []
-    }
-
-    try:
-        resultado = await grafo.ainvoke(estado_inicial)
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error interno del grafo: {str(e)}"
-        )
-
-    return ResultadoSalida(
-        barrio=consulta.barrio_consulta,
-        condicion_predicha=resultado.get("condicion_predicha"),
-        probabilidad_lluvia=resultado.get("probabilidad_lluvia"),
-        nivel_alerta=resultado.get("nivel_alerta"),
-        mensaje_final=resultado.get("mensaje_final"),
-        contradiccion=resultado.get("contradiccion_detectada"),
-        errores=resultado.get("errores", [])
-    )
+# 2. TU ENDPOINT DE PROCESAMIENTO (El que ya tenías)
+@app.post("/chat")
+async def chat(input_data: Query):
+    # Aquí despiertas a tu grafo compilado (ejemplo: 'app_graph')
+    inputs = {"messages": [("user", input_data.message)]}
+    resultado = await app_graph.ainvoke(inputs)
+    
+    # Asegúrate de extraer solo el texto de la respuesta del modelo para que la interfaz se vea limpia
+    return {"respuesta": resultado["messages"][-1].content}
