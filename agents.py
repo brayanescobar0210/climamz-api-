@@ -277,6 +277,7 @@ REGLAS:
         ])
         mensaje = resp.content.strip()
     except Exception as e:
+        print(f"ERROR GROQ: {str(e)}")
         emojis  = {"verde": "🟢", "amarillo": "🟡", "naranja": "🟠", "rojo": "🔴"}
         mensaje = (
             f"{emojis.get(nivel,'🌤️')} En {barrio}, condición: {condicion}. "
